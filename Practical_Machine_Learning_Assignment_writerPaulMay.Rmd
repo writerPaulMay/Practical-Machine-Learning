@@ -1,0 +1,114 @@
+---
+title: "Practical Machine Learning Assignment"
+output:
+  html_document:
+    keep_md: yes
+  pdf_document: default
+---
+
+## Set up environment and load source data  
+First we set up the environment, load the libraries we will need and read in the source data.  
+```{r set_up_environment}  
+if(getwd()!="/home/paul/coursework") {setwd("/home/paul/coursework")}  
+library(tidyverse)
+library(caret)
+library(rpart)
+library(corrplot)
+library(rattle)
+library(parallel)
+library(doParallel)
+library(gridExtra)  
+rawData <- read.csv("MachineLearningAssessment/pml-training.csv", na.strings=c("NA", "", "#DIV/0!"))  
+AssignmentData <- read.csv("MachineLearningAssessment/pml-testing.csv", na.strings=c("NA", "", "#DIV/0!")) 
+```  
+## Tidy the source data  
+After exploratory data analysis, we decided to remove derived data from the data set, along with irrelevant identifiers and columns with over half missing values.    
+```{r tidy_data}  
+rawData <- select(rawData, -starts_with("avg")) ## remove derived columns
+rawData <- rawData[, -(1:7)] ## remove irrelevant identifiers
+nearZeros <- nearZeroVar(rawData, saveMetrics=TRUE)  ## find columns with near-zero values  
+rawData <- rawData[, !nearZeros$nzv] ## remove columns with near-zero values
+naMeans <- colMeans(sapply(rawData, is.na)) ## find the mean number of NAs in eachcolumn
+rawData <- rawData[, naMeans<=0.5] ## remove columns with more than 50% NAs
+```  
+## Create new training and testing data sets
+We now split the tidied source data into a training and testing set. We will reserve the testing set for evaluating the models.  
+```{r create_training_and_testing_data_sets} 
+inTrain <- createDataPartition(y=rawData$classe, p=0.75, list=FALSE)
+training <- rawData[inTrain,]
+testing <- rawData[-inTrain,]  
+```  
+## Look for correlations
+Here we look to see if any of the predictors are correlated.  
+```{r find_correlations}  
+trCor <- cor(training[, -53]) 
+topCor <- findCorrelation(trCor, cutoff = 0.75)
+names(training)[topCor]  
+```
+This tells us there are clusters of correlated predictors. A plot will help show this.  
+```{r plot_correlations}  
+corrplot(trCor, method="square", tl.cex=0.6, tl.col="black")  
+```  
+   
+## Decision Tree model  
+```{r decision_tree_model}  
+dtTraining <- train(classe ~ ., data=training, method="rpart")  
+fancyRpartPlot(dtTraining$finalModel)
+```  
+  
+The decision tree runs quickly and has an elegant structure. But how accurate is is?  
+```{r decision_tree_accuracy}  
+confusionMatrix(dtTraining)  
+```  
+The accuracy on the training set about fifty-fifty - as good as tossing a coin. We can expect it to be worse on new data.  
+  
+## Linear Discriminant Analysis model  
+```{r lda_model}  
+ldaTraining <- train(classe ~ ., data=training, method="lda")  
+ldaTraining  
+```  
+This model is produced fairly fast, but its accuracy is still low. 
+  
+## Random Forest model  
+We use parallel processing to reduce the run time of this model.
+```{r rf_model}
+cluster <- makeCluster(detectCores() - 1)  
+registerDoParallel(cluster)  
+fitControl <- trainControl(method = "cv", number=10, preProcOptions="pca", allowParallel = TRUE)  
+rfTraining <- train(classe ~ ., data=training, method="rf", trControl=fitControl)  
+stopCluster(cluster)  
+registerDoSEQ()  
+rfTraining  
+```  
+Random Forest is the best of these three models.
+
+## Comparison of model performance
+Let's look at the accuracy scores of the three models when using the testing set.
+```{r model_comparison}  
+dtPred <- predict(dtTraining, newdata=testing)  
+ldaPred <- predict(ldaTraining, newdata=testing)  
+rfPred <- predict(rfTraining, newdata=testing)  
+confusionMatrix(dtPred, testing$classe)  
+confusionMatrix(ldaPred, testing$classe)  
+confusionMatrix(rfPred, testing$classe)  
+```  
+To get a sense of how the models performed, we can plot the actual values of `classe` against the predicted values in each model.  
+```{r plot_model_comparison}  
+dtPlot <- qplot(dtPred, colour=classe, xlab="Decision Tree", data=testing)  
+ldaPlot <- qplot(ldaPred, colour=classe, xlab="Linear Discriminant Analysis", data=testing)  
+rfPlot <- qplot(rfPred, colour=classe, xlab="Random Forest", data=testing)  
+grid.arrange(dtPlot, ldaPlot, rfPlot, ncol=3, bottom="Comparison of Models")  
+```  
+The plot shows that the Decision Tree fails to assign any observations to classe D - so its performance could even be said to be worse than random. 
+  
+The Linear Discriminant Analysis model appears more uniform in its errors.  
+  
+The fit of the Random Forest model is extremely close. The Random Forest model cannot be interpreted and it is computationally intensive, but it produces the best results.  
+  
+## Addendum: Process the raw data for the Assignment test  
+The 20 rows in the Assignment testing set are not applied to the model here, so as not to include the quiz answers in this output. However we include the tidying code for this data set, since we have to ensure it is in the same format as our model.  
+```{r process_assignment_data_set}  
+AssignmentData <- dplyr::select_(AssignmentData, .dots=colnames(rawData)[-53])    
+```  
+  
+  
